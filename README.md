@@ -30,7 +30,7 @@ ddos_preventive/
 
 ## Rule Deteksi
 
-Tool ini tidak lagi terbatas pada 6 rule awal. Rule yang tersedia sekarang:
+Rule yang tersedia saat ini:
 
 1. **Large response body**: satu request mengirim byte terlalu besar.
 2. **Uncommon HTTP method**: method di luar `GET,POST,HEAD,OPTIONS`.
@@ -72,6 +72,18 @@ Realtime ringan dari Nginx access log:
 
 ```bash
 tail -F /var/log/nginx/access.log | python3 ddos.py --stdin
+```
+
+Debug realtime tanpa memanggil firewall:
+
+```bash
+tail -F /var/log/nginx/access.log | python3 ddos.py --stdin --debug
+```
+
+Contoh output debug:
+
+```text
+flag=DDOS_DETECTED action=debug_only ip=203.0.113.10 domain=stdin timestamp=2026-04-27T10:00:04+07:00 method=GET path=/index.html status=200 bytes=123 reasons='request rate exceeded (4/60s), same path requested too often' user_agent=Mozilla/5.0
 ```
 
 Realtime dan blokir sungguhan:
@@ -152,7 +164,8 @@ Untuk serangan layer 3/4 seperti SYN flood, UDP flood, atau bandwidth exhaustion
 
 ## Catatan Keamanan
 
-- Jalankan tanpa `--enforce` dulu untuk melihat IP dan alasan blokir.
+- Jalankan `--debug` dulu untuk melihat flag, IP, path, status, user-agent, dan alasan deteksi tanpa memanggil firewall.
+- Jalankan tanpa `--enforce` untuk dry-run blokir. Firewall baru dieksekusi jika memakai `--enforce`.
 - Naikkan atau turunkan threshold sesuai trafik normal server.
 - Backend `nft` mengasumsikan table/chain `inet filter input` sudah ada.
 - Tool ini membantu mitigasi sederhana di level host. Untuk serangan besar, tetap butuh proteksi tambahan seperti CDN, WAF, rate limit Nginx, atau proteksi dari provider jaringan.
