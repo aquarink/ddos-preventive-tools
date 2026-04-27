@@ -10,7 +10,23 @@ Secara default tool berjalan dalam mode **dry-run**: IP yang terdeteksi hanya di
 - Deteksi DDoS dan probing memakai beberapa rule berbasis window waktu.
 - Cache negara IP memakai SQLite agar lookup eksternal tidak dilakukan berulang.
 - Backend firewall: `firewalld`, `iptables`, `nft`, atau `print`.
-- Bisa dijalankan manual, via cron, atau systemd timer.
+- Bisa dijalankan manual, via cron, systemd timer, atau streaming dari `tail -F`.
+
+## Arsitektur
+
+Kode sudah dipecah menjadi beberapa modul agar mudah dirawat:
+
+```text
+ddos.py                     # entry point command lama
+ddos_preventive/
+  cli.py                    # argumen CLI dan flow utama
+  detector.py               # rule deteksi DDoS/probing
+  firewall.py               # backend firewalld/iptables/nft
+  geoip.py                  # cache SQLite dan lookup ipinfo
+  log_parser.py             # parser access log Nginx/Apache
+  models.py                 # dataclass konfigurasi dan log entry
+  stream.py                 # mode streaming dari stdin
+```
 
 ## Rule Deteksi
 
@@ -50,6 +66,18 @@ Dry-run dari file tertentu:
 
 ```bash
 python3 ddos.py --log-file /var/log/nginx/example-access.log
+```
+
+Realtime ringan dari Nginx access log:
+
+```bash
+tail -F /var/log/nginx/access.log | python3 ddos.py --stdin
+```
+
+Realtime dan blokir sungguhan:
+
+```bash
+tail -F /var/log/nginx/access.log | sudo python3 ddos.py --stdin --enforce --firewall firewalld
 ```
 
 Atur threshold:
@@ -107,6 +135,20 @@ Python cukup untuk engine utama karena tool ini perlu parsing log, state window,
 ```
 
 Sebaiknya jangan membuat versi Bash yang menduplikasi semua rule, karena logic deteksi akan lebih sulit dites dan mudah berbeda dari versi Python.
+
+## Flow Realtime
+
+Untuk proteksi HTTP layer 7, membaca access log Nginx masih masuk akal karena Nginx sudah menyediakan IP, method, path, status code, byte response, dan user-agent. Yang perlu dihindari adalah membaca ulang seluruh file log setiap kali program jalan.
+
+Flow yang direkomendasikan:
+
+1. Nginx menulis access log.
+2. `tail -F` mengirim hanya baris log baru.
+3. `ddos.py --stdin` membaca stream baris demi baris.
+4. Detector menyimpan state request dalam window waktu.
+5. Jika threshold terlampaui, firewall backend memblokir IP.
+
+Untuk serangan layer 3/4 seperti SYN flood, UDP flood, atau bandwidth exhaustion, access log Nginx tidak cukup. Gunakan proteksi tambahan seperti firewall/kernel rate limit, CDN/WAF, atau proteksi dari provider jaringan.
 
 ## Catatan Keamanan
 
