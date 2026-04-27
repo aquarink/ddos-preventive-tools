@@ -38,14 +38,15 @@ Rule yang tersedia saat ini:
 2. **Uncommon HTTP method**: method di luar `GET,POST,HEAD,OPTIONS`.
 3. **Unusual URL format**: path tidak diawali `/`, mengandung `*`, atau backslash.
 4. **High request rate**: jumlah request dari satu IP melewati batas dalam window waktu.
-5. **Same path requested too often**: satu IP memukul path yang sama terlalu sering.
-6. **Too many suspicious response codes**: terlalu banyak status seperti `400,401,403,404,429,500,502,503`.
-7. **Suspicious user-agent**: user-agent kosong atau umum dipakai scanner/tool otomatis.
-8. **Sensitive path probing**: request ke path seperti `.env`, `wp-login.php`, `phpmyadmin`, `.git`, `backup`, dan sejenisnya.
-9. **Long query string**: query string terlalu panjang.
-10. **Too many unique URL paths**: satu IP mencoba banyak path berbeda dalam window waktu.
-11. **Bandwidth per IP**: total byte dari satu IP melewati batas dalam window waktu.
-12. **Country allow-list**: opsional, hanya mengizinkan negara tertentu jika `--allowed-countries` diisi.
+5. **Burst request rate**: jumlah request dari satu IP melewati batas dalam short-memory window, misalnya 1 detik.
+6. **Same path requested too often**: satu IP memukul path yang sama terlalu sering.
+7. **Too many suspicious response codes**: terlalu banyak status seperti `400,401,403,404,429,500,502,503`.
+8. **Suspicious user-agent**: user-agent kosong atau umum dipakai scanner/tool otomatis.
+9. **Sensitive path probing**: request ke path seperti `.env`, `wp-login.php`, `phpmyadmin`, `.git`, `backup`, dan sejenisnya.
+10. **Long query string**: query string terlalu panjang.
+11. **Too many unique URL paths**: satu IP mencoba banyak path berbeda dalam window waktu.
+12. **Bandwidth per IP**: total byte dari satu IP melewati batas dalam window waktu.
+13. **Country allow-list**: opsional, hanya mengizinkan negara tertentu jika `--allowed-countries` diisi.
 
 Extension media/static seperti `mp4`, `jpg`, `png`, `webp`, `css`, `js`, `pdf`, dan `zip` tidak dianggap berbahaya hanya karena satu response besar. Untuk direct file/API download, sinyal yang lebih penting adalah kombinasi bandwidth, request rate, path pattern, status code, dan user-agent.
 
@@ -110,6 +111,16 @@ python3 ddos.py \
   --score-threshold 7 \
   --min-categories 2
 ```
+
+Deteksi anomali lebih dari 1 request per IP dalam 1 detik:
+
+```bash
+tail -F /var/log/nginx/access.log | python3 ddos.py --stdin --debug \
+  --burst-rate-limit 1 \
+  --burst-window-seconds 1
+```
+
+Rule burst memakai memory sesaat di RAM selama proses berjalan. Jadi tool mengingat timestamp request per IP dalam window pendek, lalu memberi sinyal jika jumlah request IP tersebut melewati batas. Sinyal burst tetap masuk sistem scoring, sehingga tidak otomatis block jika belum melewati `--score-threshold` dan `--min-categories`.
 
 Abaikan single large response untuk extension tertentu:
 

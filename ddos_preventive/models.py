@@ -76,6 +76,8 @@ class DetectionResult:
 class DetectionConfig:
     max_bytes: int = 1_000_000
     rate_limit: int = 120
+    burst_rate_limit: int = 0
+    burst_window_seconds: float = 1.0
     same_path_limit: int = 60
     error_limit: int = 30
     unique_path_limit: int = 80

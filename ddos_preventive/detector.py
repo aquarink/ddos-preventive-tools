@@ -27,6 +27,7 @@ class DDoSDetector:
     def __init__(self, config: DetectionConfig):
         self.config = config
         self.ip_events = defaultdict(deque)
+        self.burst_events = defaultdict(deque)
         self.same_path_events = defaultdict(lambda: defaultdict(deque))
         self.error_events = defaultdict(deque)
         self.byte_events = defaultdict(deque)
@@ -35,6 +36,7 @@ class DDoSDetector:
     def evaluate(self, entry: LogEntry):
         signals = []
         window = timedelta(seconds=self.config.window_seconds)
+        burst_window = timedelta(seconds=self.config.burst_window_seconds)
 
         if (
             entry.bytes_sent > self.config.max_bytes
@@ -72,6 +74,17 @@ class DDoSDetector:
                     4,
                 )
             )
+
+        if self.config.burst_rate_limit > 0:
+            self._append_window(self.burst_events[entry.ip], entry.timestamp, burst_window)
+            if len(self.burst_events[entry.ip]) > self.config.burst_rate_limit:
+                signals.append(
+                    DetectionSignal(
+                        f"burst rate exceeded ({len(self.burst_events[entry.ip])}/{self.config.burst_window_seconds:g}s)",
+                        "rate",
+                        4,
+                    )
+                )
 
         path_window = self.same_path_events[entry.ip][entry.path]
         self._append_window(path_window, entry.timestamp, window)

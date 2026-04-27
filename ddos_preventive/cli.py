@@ -49,6 +49,18 @@ def build_parser():
     )
     parser.add_argument("--window-seconds", type=int, default=60)
     parser.add_argument("--rate-limit", type=int, default=120)
+    parser.add_argument(
+        "--burst-rate-limit",
+        type=int,
+        default=0,
+        help="Max requests per IP inside the burst window. 0 disables this rule.",
+    )
+    parser.add_argument(
+        "--burst-window-seconds",
+        type=float,
+        default=1.0,
+        help="Short memory window for burst detection, for example 1 second.",
+    )
     parser.add_argument("--same-path-limit", type=int, default=60)
     parser.add_argument("--error-limit", type=int, default=30)
     parser.add_argument("--unique-path-limit", type=int, default=80)
@@ -109,6 +121,8 @@ def build_config(args):
     return DetectionConfig(
         max_bytes=args.max_bytes,
         rate_limit=args.rate_limit,
+        burst_rate_limit=args.burst_rate_limit,
+        burst_window_seconds=args.burst_window_seconds,
         same_path_limit=args.same_path_limit,
         error_limit=args.error_limit,
         unique_path_limit=args.unique_path_limit,
