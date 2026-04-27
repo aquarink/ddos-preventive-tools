@@ -28,11 +28,13 @@ ddos_preventive/
   stream.py                 # mode streaming dari stdin
 ```
 
-## Rule Deteksi
+## Rule dan Scoring
+
+Tool ini memakai scoring agar satu sinyal ringan tidak langsung menyebabkan IP diblokir. Secara default, IP baru menjadi kandidat blokir jika skor minimal `7` dan sinyal berasal dari minimal `2` kategori berbeda.
 
 Rule yang tersedia saat ini:
 
-1. **Large response body**: satu request mengirim byte terlalu besar.
+1. **Large response body**: satu request mengirim byte terlalu besar, kecuali extension masuk daftar ignore.
 2. **Uncommon HTTP method**: method di luar `GET,POST,HEAD,OPTIONS`.
 3. **Unusual URL format**: path tidak diawali `/`, mengandung `*`, atau backslash.
 4. **High request rate**: jumlah request dari satu IP melewati batas dalam window waktu.
@@ -42,7 +44,10 @@ Rule yang tersedia saat ini:
 8. **Sensitive path probing**: request ke path seperti `.env`, `wp-login.php`, `phpmyadmin`, `.git`, `backup`, dan sejenisnya.
 9. **Long query string**: query string terlalu panjang.
 10. **Too many unique URL paths**: satu IP mencoba banyak path berbeda dalam window waktu.
-11. **Country allow-list**: opsional, hanya mengizinkan negara tertentu jika `--allowed-countries` diisi.
+11. **Bandwidth per IP**: total byte dari satu IP melewati batas dalam window waktu.
+12. **Country allow-list**: opsional, hanya mengizinkan negara tertentu jika `--allowed-countries` diisi.
+
+Extension media/static seperti `mp4`, `jpg`, `png`, `webp`, `css`, `js`, `pdf`, dan `zip` tidak dianggap berbahaya hanya karena satu response besar. Untuk direct file/API download, sinyal yang lebih penting adalah kombinasi bandwidth, request rate, path pattern, status code, dan user-agent.
 
 ## Instalasi
 
@@ -83,7 +88,7 @@ tail -F /var/log/nginx/access.log | python3 ddos.py --stdin --debug
 Contoh output debug:
 
 ```text
-flag=DDOS_DETECTED action=debug_only ip=203.0.113.10 domain=stdin timestamp=2026-04-27T10:00:04+07:00 method=GET path=/index.html status=200 bytes=123 reasons='request rate exceeded (4/60s), same path requested too often' user_agent=Mozilla/5.0
+flag=DDOS_DETECTED action=debug_only score=8 threshold=7 categories=2 ip=203.0.113.10 domain=stdin timestamp=2026-04-27T10:00:04+07:00 method=GET path=/index.html status=200 bytes=123 reasons='request rate exceeded (4/60s), bandwidth exceeded (160000000 bytes/60s)' user_agent=Mozilla/5.0
 ```
 
 Realtime dan blokir sungguhan:
@@ -100,7 +105,16 @@ python3 ddos.py \
   --window-seconds 60 \
   --rate-limit 120 \
   --same-path-limit 60 \
-  --error-limit 30
+  --error-limit 30 \
+  --bandwidth-limit 104857600 \
+  --score-threshold 7 \
+  --min-categories 2
+```
+
+Abaikan single large response untuk extension tertentu:
+
+```bash
+python3 ddos.py --ignore-large-response-extensions mp4,jpg,png,webp,css,js,pdf,zip
 ```
 
 Blokir sungguhan memakai firewalld:

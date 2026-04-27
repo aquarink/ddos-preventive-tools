@@ -7,6 +7,8 @@ from ddos_preventive.log_parser import parse_nginx_timestamp
 from ddos_preventive.models import (
     DEFAULT_ALLOWED_METHODS,
     DetectionConfig,
+    DetectionResult,
+    DetectionSignal,
     LogEntry,
 )
 
@@ -27,57 +29,99 @@ class DDoSDetector:
         self.ip_events = defaultdict(deque)
         self.same_path_events = defaultdict(lambda: defaultdict(deque))
         self.error_events = defaultdict(deque)
+        self.byte_events = defaultdict(deque)
         self.unique_paths = defaultdict(lambda: defaultdict(set))
 
-    def detect(self, entry: LogEntry):
-        reasons = []
+    def evaluate(self, entry: LogEntry):
+        signals = []
         window = timedelta(seconds=self.config.window_seconds)
 
-        if entry.bytes_sent > self.config.max_bytes:
-            reasons.append(f"large response body ({entry.bytes_sent} bytes)")
+        if (
+            entry.bytes_sent > self.config.max_bytes
+            and file_extension(entry.path) not in self.config.ignored_large_response_extensions
+        ):
+            signals.append(
+                DetectionSignal(
+                    f"large response body ({entry.bytes_sent} bytes)", "bandwidth", 1
+                )
+            )
 
         if entry.method.upper() not in self.config.allowed_methods:
-            reasons.append(f"uncommon HTTP method ({entry.method})")
+            signals.append(
+                DetectionSignal(f"uncommon HTTP method ({entry.method})", "method", 2)
+            )
 
         if unusual_common_format_url_path(entry.path):
-            reasons.append("unusual URL format")
+            signals.append(DetectionSignal("unusual URL format", "path", 3))
 
         if len(query_string(entry.path)) > self.config.max_query_length:
-            reasons.append("query string too long")
+            signals.append(DetectionSignal("query string too long", "path", 2))
 
         if SENSITIVE_PATH_RE.search(entry.path):
-            reasons.append("sensitive path probing")
+            signals.append(DetectionSignal("sensitive path probing", "path", 5))
 
         if SUSPICIOUS_USER_AGENT_RE.search(entry.user_agent or ""):
-            reasons.append("suspicious user-agent")
+            signals.append(DetectionSignal("suspicious user-agent", "client", 1))
 
         self._append_window(self.ip_events[entry.ip], entry.timestamp, window)
         if len(self.ip_events[entry.ip]) > self.config.rate_limit:
-            reasons.append(
-                f"request rate exceeded ({len(self.ip_events[entry.ip])}/{self.config.window_seconds}s)"
+            signals.append(
+                DetectionSignal(
+                    f"request rate exceeded ({len(self.ip_events[entry.ip])}/{self.config.window_seconds}s)",
+                    "rate",
+                    4,
+                )
             )
 
         path_window = self.same_path_events[entry.ip][entry.path]
         self._append_window(path_window, entry.timestamp, window)
         if len(path_window) > self.config.same_path_limit:
-            reasons.append("same path requested too often")
+            signals.append(DetectionSignal("same path requested too often", "rate", 3))
 
         if entry.status_code in self.config.suspicious_statuses:
             self._append_window(self.error_events[entry.ip], entry.timestamp, window)
             if len(self.error_events[entry.ip]) > self.config.error_limit:
-                reasons.append("too many suspicious response codes")
+                signals.append(
+                    DetectionSignal("too many suspicious response codes", "error", 3)
+                )
+
+        byte_window = self.byte_events[entry.ip]
+        byte_window.append((entry.timestamp, entry.bytes_sent))
+        while byte_window and entry.timestamp - byte_window[0][0] > window:
+            byte_window.popleft()
+        total_bytes = sum(bytes_sent for _, bytes_sent in byte_window)
+        if total_bytes > self.config.bandwidth_limit:
+            signals.append(
+                DetectionSignal(
+                    f"bandwidth exceeded ({total_bytes} bytes/{self.config.window_seconds}s)",
+                    "bandwidth",
+                    4,
+                )
+            )
 
         minute_bucket = entry.timestamp.replace(second=0, microsecond=0)
         self.unique_paths[entry.ip][minute_bucket].add(entry.path)
         self._prune_unique_path_buckets(entry.ip, minute_bucket, window)
         unique_count = sum(len(paths) for paths in self.unique_paths[entry.ip].values())
         if unique_count > self.config.unique_path_limit:
-            reasons.append("too many unique URL paths")
+            signals.append(DetectionSignal("too many unique URL paths", "path", 3))
 
         if self.config.country_check and country_code_check(entry.ip, self.config):
-            reasons.append("country not allowed")
+            signals.append(DetectionSignal("country not allowed", "geo", 2))
 
-        return bool(reasons), reasons
+        score = sum(signal.score for signal in signals)
+        category_count = len({signal.category for signal in signals})
+        return DetectionResult(
+            signals=signals,
+            score=score,
+            category_count=category_count,
+            score_threshold=self.config.score_threshold,
+            min_categories=self.config.min_categories,
+        )
+
+    def detect(self, entry: LogEntry):
+        result = self.evaluate(entry)
+        return result.should_block, result.reasons
 
     @staticmethod
     def _append_window(items, timestamp, window):
@@ -107,6 +151,13 @@ def query_string(path):
     return path.split("?", 1)[1] if "?" in path else ""
 
 
+def file_extension(path):
+    clean_path = path.split("?", 1)[0].rsplit("/", 1)[-1]
+    if "." not in clean_path:
+        return ""
+    return clean_path.rsplit(".", 1)[1].lower()
+
+
 def detect_ddos_attack_v2(processed_data_list, max_requests=120, interval_seconds=60):
     config = DetectionConfig(rate_limit=max_requests, window_seconds=interval_seconds)
     detector = DDoSDetector(config)
@@ -128,5 +179,5 @@ def detect_ddos_attack_v2(processed_data_list, max_requests=120, interval_second
     else:
         return True, "Data length not equal to 7"
 
-    is_attack, reasons = detector.detect(entry)
-    return is_attack, ", ".join(reasons) if reasons else "No attack detected"
+    result = detector.evaluate(entry)
+    return result.should_block, ", ".join(result.reasons) if result.reasons else "No attack detected"

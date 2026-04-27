@@ -52,8 +52,31 @@ def build_parser():
     parser.add_argument("--same-path-limit", type=int, default=60)
     parser.add_argument("--error-limit", type=int, default=30)
     parser.add_argument("--unique-path-limit", type=int, default=80)
+    parser.add_argument(
+        "--bandwidth-limit",
+        type=int,
+        default=100 * 1024 * 1024,
+        help="Max bytes per IP within the window before bandwidth abuse is signaled.",
+    )
     parser.add_argument("--max-bytes", type=int, default=1_000_000)
     parser.add_argument("--max-query-length", type=int, default=1_024)
+    parser.add_argument(
+        "--score-threshold",
+        type=int,
+        default=7,
+        help="Minimum score before a detection becomes a block candidate.",
+    )
+    parser.add_argument(
+        "--min-categories",
+        type=int,
+        default=2,
+        help="Minimum distinct signal categories before a block candidate is allowed.",
+    )
+    parser.add_argument(
+        "--ignore-large-response-extensions",
+        default="avi,css,gif,jpeg,jpg,js,m4v,mov,mp3,mp4,pdf,png,svg,webm,webp,zip",
+        help="Comma separated extensions where one large response is not suspicious by itself.",
+    )
     parser.add_argument(
         "--allowed-methods",
         default="GET,POST,HEAD,OPTIONS",
@@ -79,15 +102,23 @@ def build_parser():
 
 def build_config(args):
     allowed_countries = parse_csv_set(args.allowed_countries, str.upper)
+    ignored_extensions = {
+        item.lstrip(".").lower()
+        for item in parse_csv_set(args.ignore_large_response_extensions, str.lower)
+    }
     return DetectionConfig(
         max_bytes=args.max_bytes,
         rate_limit=args.rate_limit,
         same_path_limit=args.same_path_limit,
         error_limit=args.error_limit,
         unique_path_limit=args.unique_path_limit,
+        bandwidth_limit=args.bandwidth_limit,
         window_seconds=args.window_seconds,
         max_query_length=args.max_query_length,
+        score_threshold=args.score_threshold,
+        min_categories=args.min_categories,
         allowed_methods=parse_csv_set(args.allowed_methods, str.upper),
+        ignored_large_response_extensions=ignored_extensions,
         allowed_countries=allowed_countries,
         country_check=bool(allowed_countries),
         db_path=Path(args.db_path),
@@ -107,10 +138,13 @@ def iter_entries_from_args(args):
     return sorted(entries, key=lambda item: item.timestamp)
 
 
-def format_debug_detection(entry, reasons):
+def format_debug_detection(entry, result):
     fields = {
-        "flag": "DDOS_DETECTED",
+        "flag": result.flag,
         "action": "debug_only",
+        "score": str(result.score),
+        "threshold": str(result.score_threshold),
+        "categories": str(result.category_count),
         "ip": entry.ip,
         "domain": entry.domain,
         "timestamp": entry.timestamp.isoformat(),
@@ -118,7 +152,7 @@ def format_debug_detection(entry, reasons):
         "path": entry.path,
         "status": str(entry.status_code),
         "bytes": str(entry.bytes_sent),
-        "reasons": ", ".join(reasons),
+        "reasons": ", ".join(result.reasons),
         "user_agent": entry.user_agent,
     }
     return " ".join(f"{key}={shlex.quote(value)}" for key, value in fields.items())
@@ -129,48 +163,64 @@ def main(argv=None):
     config = build_config(args)
     detector = DDoSDetector(config)
     blocked = {}
-    detected_ips = set()
-    detected_events = 0
+    signal_ips = set()
+    block_candidate_events = 0
+    block_candidate_ips = set()
     reason_counter = Counter()
+    signal_events = 0
     backend = args.firewall if args.enforce else "print"
 
     try:
         for entry in iter_entries_from_args(args):
-            is_attack, reasons = detector.detect(entry)
-            if not is_attack:
+            result = detector.evaluate(entry)
+            if not result.has_signal:
                 continue
 
-            detected_events += 1
-            detected_ips.add(entry.ip)
-            reason_counter.update(reasons)
+            signal_events += 1
+            signal_ips.add(entry.ip)
+            reason_counter.update(result.reasons)
+            if result.should_block:
+                block_candidate_events += 1
+                block_candidate_ips.add(entry.ip)
 
             if args.debug:
-                print(format_debug_detection(entry, reasons), flush=True)
+                print(format_debug_detection(entry, result), flush=True)
+                continue
+
+            if not result.should_block:
                 continue
 
             if entry.ip in blocked:
                 continue
 
-            blocked[entry.ip] = reasons
+            blocked[entry.ip] = result.reasons
             block_ip(entry.ip, backend)
             action = "blocked" if args.enforce else "would be blocked"
-            print(f"IP {entry.ip} {action}. Reason: {', '.join(reasons)}", flush=True)
+            print(
+                f"IP {entry.ip} {action}. Score: {result.score}. "
+                f"Reason: {', '.join(result.reasons)}",
+                flush=True,
+            )
     except (FileNotFoundError, subprocess.CalledProcessError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if not detected_events:
+    if not signal_events:
         print("No attack detected.")
     elif args.debug:
         print("\nSummary:")
-        print(f"- detected events: {detected_events}")
-        print(f"- detected IPs: {len(detected_ips)}")
+        print(f"- signal events: {signal_events}")
+        print(f"- signal IPs: {len(signal_ips)}")
+        print(f"- block candidate events: {block_candidate_events}")
+        print(f"- block candidate IPs: {len(block_candidate_ips)}")
         for reason, count in reason_counter.most_common():
             print(f"- {reason}: {count}")
     else:
         print("\nSummary:")
         label = "blocked IPs" if args.enforce else "IPs that would be blocked"
         print(f"- {label}: {len(blocked)}")
+        print(f"- block candidate events: {block_candidate_events}")
+        print(f"- signal events: {signal_events}")
         for reason, count in reason_counter.most_common():
             print(f"- {reason}: {count}")
     return 0
