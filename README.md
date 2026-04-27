@@ -1,23 +1,116 @@
-# Deskripsi Proyek DDoS Detection
+# DDoS Preventive Tools
 
-Proyek ini dibuat dengan menggunakan bahasa pemrograman Python dan bertujuan untuk menganalisis file log layanan web dari server Nginx, Apache, atau platform lainnya. Proyek ini memiliki fungsi utama yaitu mendeteksi serangan Distributed Denial of Service (DDoS) dengan menerapkan enam aturan pengecekan yang telah diimplementasikan dalam kode.
+Tool open source berbasis Python untuk membaca access log Nginx/Apache, mendeteksi pola trafik yang mencurigakan, lalu menyiapkan aksi blokir IP lewat firewall.
 
-## Cara Kerja
+Secara default tool berjalan dalam mode **dry-run**: IP yang terdeteksi hanya dicetak ke terminal. Blokir firewall baru dijalankan jika memakai opsi `--enforce`.
 
-1. **Baca Log Layanan Web:** Proyek ini dimulai dengan membaca file log layanan web yang dihasilkan oleh server yang bersangkutan.
+## Fitur
 
-2. **Pengecekan Enam Aturan:** Algoritma proyek menjalankan enam aturan yang telah ditentukan untuk mengidentifikasi pola-pola khusus dalam log yang dapat mengindikasikan adanya serangan DDoS.
+- Parsing access log format umum Nginx/Apache.
+- Deteksi DDoS dan probing memakai beberapa rule berbasis window waktu.
+- Cache negara IP memakai SQLite agar lookup eksternal tidak dilakukan berulang.
+- Backend firewall: `firewalld`, `iptables`, `nft`, atau `print`.
+- Bisa dijalankan manual, via cron, atau systemd timer.
 
-3. **Aksi Firewall:** Jika proyek mendeteksi bahwa lalu lintas memenuhi kriteria serangan DDoS, langkah selanjutnya adalah memasukkan alamat IP penyerang ke dalam daftar firewall.
+## Rule Deteksi
 
-## Manfaat
+Tool ini tidak lagi terbatas pada 6 rule awal. Rule yang tersedia sekarang:
 
-- Proaktif Terhadap Serangan DDoS
-- Analisis Log Otomatis
-- Respons Cepat Melalui Integrasi dengan Firewall
+1. **Large response body**: satu request mengirim byte terlalu besar.
+2. **Uncommon HTTP method**: method di luar `GET,POST,HEAD,OPTIONS`.
+3. **Unusual URL format**: path tidak diawali `/`, mengandung `*`, atau backslash.
+4. **High request rate**: jumlah request dari satu IP melewati batas dalam window waktu.
+5. **Same path requested too often**: satu IP memukul path yang sama terlalu sering.
+6. **Too many suspicious response codes**: terlalu banyak status seperti `400,401,403,404,429,500,502,503`.
+7. **Suspicious user-agent**: user-agent kosong atau umum dipakai scanner/tool otomatis.
+8. **Sensitive path probing**: request ke path seperti `.env`, `wp-login.php`, `phpmyadmin`, `.git`, `backup`, dan sejenisnya.
+9. **Long query string**: query string terlalu panjang.
+10. **Too many unique URL paths**: satu IP mencoba banyak path berbeda dalam window waktu.
+11. **Country allow-list**: opsional, hanya mengizinkan negara tertentu jika `--allowed-countries` diisi.
 
-## Tujuan
+## Instalasi
 
-Melindungi server dan mengurangi dampak serangan DDoS terhadap ketersediaan layanan dengan mengidentifikasi dan memblokir alamat IP penyerang yang terdeteksi.
+Tidak ada dependency Python eksternal. Cukup gunakan Python 3 modern.
 
-Proyek ini menyediakan solusi yang efektif dan otomatis untuk menghadapi serangan DDoS, menjadikannya pilihan yang kuat untuk meningkatkan keamanan server.
+```bash
+git clone https://github.com/aquarink/ddos-preventive-tools.git
+cd ddos-preventive-tools
+python3 -m py_compile ddos.py
+```
+
+## Cara Pakai
+
+Dry-run dari folder log default `/var/log/nginx`:
+
+```bash
+python3 ddos.py
+```
+
+Dry-run dari file tertentu:
+
+```bash
+python3 ddos.py --log-file /var/log/nginx/example-access.log
+```
+
+Atur threshold:
+
+```bash
+python3 ddos.py \
+  --log-file /var/log/nginx/example-access.log \
+  --window-seconds 60 \
+  --rate-limit 120 \
+  --same-path-limit 60 \
+  --error-limit 30
+```
+
+Blokir sungguhan memakai firewalld:
+
+```bash
+sudo python3 ddos.py --enforce --firewall firewalld
+```
+
+Blokir sungguhan memakai iptables:
+
+```bash
+sudo python3 ddos.py --enforce --firewall iptables
+```
+
+Blokir sungguhan memakai nftables:
+
+```bash
+sudo python3 ddos.py --enforce --firewall nft
+```
+
+## Country Allow-list
+
+Rule negara bersifat opsional. Jika ingin hanya mengizinkan Indonesia dan Timor-Leste:
+
+```bash
+export IPINFO_TOKEN="token-ipinfo-anda"
+python3 ddos.py --allowed-countries ID,TL
+```
+
+Token tidak disimpan di source code. Gunakan environment variable `IPINFO_TOKEN`.
+
+Cache lookup disimpan di `ipinfo.db` secara default. Bisa diubah dengan:
+
+```bash
+python3 ddos.py --db-path /var/lib/ddos-preventive-tools/ipinfo.db
+```
+
+## Python atau Bash?
+
+Python cukup untuk engine utama karena tool ini perlu parsing log, state window, cache SQLite, validasi IP, dan beberapa backend firewall. Bash tetap berguna sebagai wrapper deployment, misalnya untuk cron:
+
+```bash
+*/5 * * * * root /usr/bin/python3 /opt/ddos-preventive-tools/ddos.py --enforce --firewall firewalld >> /var/log/ddos-preventive-tools.log 2>&1
+```
+
+Sebaiknya jangan membuat versi Bash yang menduplikasi semua rule, karena logic deteksi akan lebih sulit dites dan mudah berbeda dari versi Python.
+
+## Catatan Keamanan
+
+- Jalankan tanpa `--enforce` dulu untuk melihat IP dan alasan blokir.
+- Naikkan atau turunkan threshold sesuai trafik normal server.
+- Backend `nft` mengasumsikan table/chain `inet filter input` sudah ada.
+- Tool ini membantu mitigasi sederhana di level host. Untuk serangan besar, tetap butuh proteksi tambahan seperti CDN, WAF, rate limit Nginx, atau proteksi dari provider jaringan.
